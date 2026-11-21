@@ -18,6 +18,22 @@ export const OFFICE_COST = 1_000;
 export const MAX_EMPLOYEES = 8;
 export const ARPU = 2;
 export const MONTHLY_SPEND_LIMIT_DEFAULT = 50;
+/** 월급 하한: 시장가의 70%. 이보다 낮게 깎을 수 없다. */
+export const SALARY_FLOOR_RATIO = 0.7;
+/** 광고: 기본 획득 단가와, 예산이 커질수록 단가가 오르는 기준 금액 */
+export const AD_BASE_CAC = 15;
+export const AD_SATURATION = 30_000;
+export const AD_BUDGET_MAX = 50_000;
+/** 크런치가 이 개월 수를 넘게 이어지면 성과 보너스가 줄고 만족도 하락이 커진다 */
+export const CRUNCH_GRACE_MONTHS = 2;
+/** 한 업무에 성과가 몰리면 체감한다: 10을 넘는 부분은 (합/10)^0.8 */
+export const TASK_DIMINISH_EXP = 0.8;
+/** AI 점수가 객단가를 올리는 상한(+50%) */
+export const AI_ARPU_CAP = 0.5;
+/** 오너가 학습 카드를 맞힌 달의 팀 전체 성과 가산 */
+export const TEAM_MISSION_BONUS = 0.1;
+/** 창업 직후 오너에게 기본으로 맡기는 업무 후보(매출이나 제품으로 바로 이어지는 업무) */
+const STARTER_TASKS: TaskId[] = ['dev', 'plan', 'sales', 'marketing'];
 
 const clone = <T>(x: T): T => structuredClone(x);
 
@@ -166,7 +182,9 @@ export function foundCompany(state: GameState, name: string, faction: FactionId)
     aiScore: 0,
     irScore: 0,
     intensity: 'normal',
-    playerTask: bestTaskFor(s.player.stats),
+    crunchMonths: 0,
+    adBudget: 0,
+    playerTask: bestTaskFor(s.player.stats, STARTER_TASKS),
     employees: [],
     roundIndex: 0,
     ownership: 1,
@@ -181,10 +199,10 @@ export function foundCompany(state: GameState, name: string, faction: FactionId)
   return s;
 }
 
-export function bestTaskFor(stats: Stats): TaskId {
-  let best: TaskId = 'dev';
+export function bestTaskFor(stats: Stats, among: TaskId[] = Object.keys(TASKS) as TaskId[]): TaskId {
+  let best: TaskId = among[0] ?? 'dev';
   let bestFit = -1;
-  for (const t of Object.values(TASKS)) {
+  for (const t of among.map((id) => TASKS[id])) {
     const f = fit(stats, t.main, t.sub);
     if (f > bestFit) { bestFit = f; best = t.id; }
   }
@@ -290,12 +308,47 @@ export function assignTask(state: GameState, who: 'player' | string, task: TaskI
   return s;
 }
 
+export function salaryFloor(stats: Stats): number {
+  return Math.ceil((askingSalary(stats) * SALARY_FLOOR_RATIO) / 50) * 50;
+}
+
+/** 월급 변경. 하한(시장가 70%) 아래로는 못 내리고, 깎으면 만족도가 그 자리에서 떨어진다(10% 삭감 → -6). */
 export function setSalary(state: GameState, employeeId: string, salary: number): GameState {
   const s = clone(state);
   const e = s.company?.employees.find((x) => x.id === employeeId);
   if (!e) return state;
-  e.salary = Math.max(0, Math.round(salary / 50) * 50);
+  const next = Math.max(salaryFloor(e.stats), Math.round((salary || 0) / 50) * 50);
+  if (next < e.salary) e.satisfaction = clamp(e.satisfaction - ((e.salary - next) / e.salary) * 60, 0, 100);
+  e.salary = next;
   return s;
+}
+
+export function setAdBudget(state: GameState, usd: number): GameState {
+  const s = clone(state);
+  if (!s.company) return state;
+  s.company.adBudget = clamp(Math.round((usd || 0) / 100) * 100, 0, AD_BUDGET_MAX);
+  return s;
+}
+
+/** 광고 예산으로 얻는 월 신규 사용자. 예산이 커질수록 단가가 올라 체감한다. */
+export function adUsers(budget: number, product: number): number {
+  if (budget <= 0) return 0;
+  return (budget / (AD_BASE_CAC * (1 + budget / AD_SATURATION))) * (0.4 + product / 100);
+}
+
+/** 크런치 성과 배수: 처음 2개월은 1.2, 그 뒤로 매달 0.1씩 줄어 최저 0.8 */
+export function crunchOutputMult(crunchMonths: number): number {
+  if (crunchMonths <= 0) return 1;
+  return Math.max(0.8, 1.2 - 0.1 * Math.max(0, crunchMonths - CRUNCH_GRACE_MONTHS));
+}
+
+/** 업무별 성과 합의 체감: 10까지는 그대로, 넘으면 10·(합/10)^0.8 */
+export function diminish(sum: number): number {
+  return sum <= 10 ? sum : 10 * Math.pow(sum / 10, TASK_DIMINISH_EXP);
+}
+
+export function arpu(co: Company): number {
+  return ARPU * (1 + Math.min(AI_ARPU_CAP, co.aiScore / 400));
 }
 
 export function fire(state: GameState, employeeId: string): GameState {
@@ -403,10 +456,21 @@ export function setSpendLimit(state: GameState, usd: number): GameState {
 
 // ---------- 투자 ----------
 
+/** 회사 가치 = 사업 가치 + 보유 현금. 투자금이 가치에 남아야 희석이 손해만 되지 않는다. */
 export function valuation(co: Company, traits: string[] = []): number {
-  const aiMult = Math.min(4, co.aiScore / 200) * (traits.includes('evangelist') ? 1.5 : 1);
+  const aiMult = Math.min(2, co.aiScore / 300) * (traits.includes('evangelist') ? 1.5 : 1);
   const mult = 6 + aiMult;
-  return Math.round(200_000 + co.product * 3_000 + co.users * 5 + co.mrr * 12 * mult);
+  return Math.round(200_000 + co.product * 3_000 + co.users * 5 + co.mrr * 12 * mult + Math.max(0, co.cash));
+}
+
+/** 최근 3개월 MRR 성장률(0~0.6). VC 프리머니 웃돈에 쓴다. */
+export function growthPremium(co: Company): number {
+  const h = co.history;
+  if (h.length < 4) return 0;
+  const before = h[h.length - 4]!.mrr;
+  const now = h[h.length - 1]!.mrr;
+  if (before <= 0) return now > 0 ? 0.6 : 0;
+  return clamp(now / before - 1, 0, 0.6);
 }
 
 function maybeCreateOffer(s: GameState, rng: Rng) {
@@ -416,7 +480,8 @@ function maybeCreateOffer(s: GameState, rng: Rng) {
   if (s.offers.some((o) => o.round === next)) return;
   const r = ROUNDS[next]!;
   if (co.mrr < r.minMrr || co.product < r.minProduct) return;
-  let pre = valuation(co, s.player.traits) * clamp(0.85 + co.irScore / 400, 0.85, 1.3);
+  // VC는 성장률에 웃돈을 준다: 최근 3개월 MRR 성장률만큼(최대 +60%)
+  let pre = valuation(co, s.player.traits) * clamp(0.85 + co.irScore / 400, 0.85, 1.3) * (1 + growthPremium(co));
   if (co.faction === 'north') pre *= 1.15;
   if (s.player.traits.includes('storyteller')) pre *= 1.1;
   let amount = (pre * r.dilution) / (1 - r.dilution);
@@ -452,7 +517,7 @@ function makeRivals(seed: string): Rival[] {
   const out: Rival[] = [];
   (['north', 'west', 'south'] as FactionId[]).forEach((f) => {
     for (let i = 0; i < 3; i++) {
-      out.push({ id: `${f}-${i}`, name: companyName(rng), faction: f, valuation: Math.round(uniform(rng, 250_000, 600_000)), momentum: uniform(rng, 0.02, 0.06) });
+      out.push({ id: `${f}-${i}`, name: companyName(rng), faction: f, valuation: Math.round(uniform(rng, 250_000, 600_000)), momentum: uniform(rng, 0.03, 0.07) });
     }
   });
   return out;
@@ -493,7 +558,9 @@ export function advanceMonth(state: GameState): GameState {
   const report: MonthReport = {
     month: s.month, outputs: [], revenue: 0, costs: 0, cashDelta: 0, usersDelta: 0, resigned: [], growth: [], fatigueAfter: 0, event: ev ? `${ev.title}: ${ev.text}` : null,
   };
-  const crunch = co.intensity === 'crunch' ? 1.2 : 1;
+  co.crunchMonths = co.intensity === 'crunch' ? (co.crunchMonths ?? 0) + 1 : Math.max(0, (co.crunchMonths ?? 0) - 2);
+  const crunch = co.intensity === 'crunch' ? crunchOutputMult(co.crunchMonths) : 1;
+  const burnout = Math.max(0, co.crunchMonths - CRUNCH_GRACE_MONTHS);
   const tierFit = fitnessTier(p.exerciseDaysPerWeek);
 
   // 1) 업무 성과
@@ -503,7 +570,9 @@ export function advanceMonth(state: GameState): GameState {
   let playerMission = missionOk ? 0.2 : 0;
   if (missionOk && p.traits.includes('hacker') && co.playerTask === 'dev') playerMission += 0.2;
   workers.push({ who: p.name, stats: effectiveStats(p), task: co.playerTask, mod: playerOutputMod(p.fatigue), missionBonus: playerMission });
-  for (const e of co.employees) workers.push({ who: e.name, stats: e.stats, task: e.task, mod: satisfactionMod(e.satisfaction), missionBonus: 0 });
+  // 오너가 학습 카드를 맞힌 달에는 팀 전체도 +10%(방향을 잘 잡은 달). 직원 미션은 다음 단계에서 직원 플레이어가 한다.
+  const teamMission = missionOk ? TEAM_MISSION_BONUS : 0;
+  for (const e of co.employees) workers.push({ who: e.name, stats: e.stats, task: e.task, mod: satisfactionMod(e.satisfaction), missionBonus: teamMission });
 
   const sum: Record<TaskId, number> = { dev: 0, ai: 0, plan: 0, sales: 0, marketing: 0, hiring: 0, finance: 0 };
   for (const w of workers) {
@@ -520,27 +589,29 @@ export function advanceMonth(state: GameState): GameState {
     report.outputs.push({ who: w.who, task: w.task, output: out });
   }
 
-  // 2) 지표 반영
+  // 2) 지표 반영 (한 업무에 몰린 성과는 체감)
+  for (const t of Object.keys(sum) as TaskId[]) sum[t] = diminish(sum[t]);
   co.product = clamp(co.product + sum.dev * 0.35 * (1 - co.product / 110) + sum.ai * 0.15 * (1 - co.product / 110), 0, 100);
   co.aiScore += sum.ai;
   co.retentionBonus = Math.min(0.05, co.retentionBonus + sum.plan * 0.0008 * (p.traits.includes('designer') ? 1.2 : 1));
   const churn = 0.08 - co.retentionBonus;
-  const newUsers = sum.marketing * 25 * (0.4 + co.product / 100) * (1 + co.brand / 100) + co.product * 6;
+  const adSpend = Math.min(co.adBudget ?? 0, Math.max(0, co.cash));
+  const newUsers = sum.marketing * 25 * (0.4 + co.product / 100) * (1 + co.brand / 100) + co.product * 6 + adUsers(adSpend, co.product);
   const beforeUsers = co.users;
   co.users = Math.round(co.users * (1 - churn) + newUsers);
   report.usersDelta = co.users - beforeUsers;
   co.brand = clamp(co.brand + sum.marketing * 0.2 * (1 - co.brand / 100), 0, 100);
   co.enterpriseMrr = co.enterpriseMrr * 0.98 + sum.sales * 25 * (co.product / 100);
-  co.culture = clamp(co.culture + sum.hiring * 0.4 * (1 - co.culture / 100) - (co.intensity === 'crunch' ? 2 : 0) - 0.5, 0, 100);
+  co.culture = clamp(co.culture + sum.hiring * 0.4 * (1 - co.culture / 100) - (co.intensity === 'crunch' ? 2 + burnout : 0) - 0.5, 0, 100);
   co.irScore = Math.min(200, co.irScore + sum.finance * 0.6);
-  co.mrr = Math.round(co.users * ARPU * (co.product / 100) + co.enterpriseMrr);
+  co.mrr = Math.round(co.users * arpu(co) * (co.product / 100) + co.enterpriseMrr);
 
   // 3) 현금 흐름
   const salaries = co.employees.reduce((a, e) => a + e.salary, 0);
   let costs = salaries + OFFICE_COST + 200 * co.employees.length;
   if (p.traits.includes('cfo')) costs *= 0.9;
   const savings = Math.min(costs * 0.3, sum.finance * 60);
-  costs = Math.round(costs - savings);
+  costs = Math.round(costs - savings + adSpend);
   report.revenue = co.mrr;
   report.costs = costs;
   report.cashDelta = co.mrr - costs;
@@ -555,7 +626,7 @@ export function advanceMonth(state: GameState): GameState {
     let d = clamp(((e.salary / market) - 1) * 30, -5, 5);
     d += top2.includes(TASKS[e.task].main) ? 2 : -2;
     d += (co.culture - 50) / 25;
-    d += co.intensity === 'crunch' ? -3 : 1;
+    d += co.intensity === 'crunch' ? -3 - burnout : 1;
     if (p.traits.includes('captain')) d += 1;
     if (co.faction === 'west' && d < 0) d *= 0.7;
     d += uniform(rng, -1, 1);
@@ -634,7 +705,7 @@ export function advanceMonth(state: GameState): GameState {
 
 /** 지금 비용과 매출이 그대로일 때 현금이 버티는 개월 수 */
 export function runwayMonths(co: Company): number {
-  const costs = co.employees.reduce((a, e) => a + e.salary, 0) + OFFICE_COST + 200 * co.employees.length;
+  const costs = co.employees.reduce((a, e) => a + e.salary, 0) + OFFICE_COST + 200 * co.employees.length + (co.adBudget ?? 0);
   const burn = costs - co.mrr;
   if (burn <= 0) return Infinity;
   return Math.max(0, co.cash / burn);
