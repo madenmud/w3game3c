@@ -26,20 +26,30 @@ jobs:
       - run: npm test
       - run: npm run build
       - if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
+          name: site
           path: dist
 
+  # Pages 소스는 gh-pages 브랜치다. 빌드 결과를 그 브랜치에 올리면 GitHub가 배포한다.
   deploy:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      contents: write
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: site
+      - name: Push to gh-pages
+        working-directory: site
+        run: |
+          touch .nojekyll
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "deploy: ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

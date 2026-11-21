@@ -3,7 +3,7 @@
 가상 아바타로 스타트업을 세우고, 직원에게 업무를 맡기고, 투자를 받으며 세 거대 진영의 패권을 다투는 자동 진행형 소셜게임입니다.
 
 - 설계 문서: `docs/design-v0.1.md`
-- 체험판: https://madenmud.github.io/w3game3c/ (GitHub Pages 설정 후)
+- 체험판: https://madenmud.github.io/w3game3c/
 
 ## 체험판(MVP) 범위
 
@@ -36,4 +36,4 @@ npm run build
 
 ## 배포
 
-`main`에 머지하면 GitHub Actions가 테스트·빌드 후 GitHub Pages에 배포합니다. 저장소 Settings → Pages → Source를 **GitHub Actions**로 한 번 설정해야 합니다.
+`main`에 머지하면 GitHub Actions가 테스트·빌드한 뒤 결과를 `gh-pages` 브랜치에 올리고, GitHub Pages가 그 브랜치를 서빙합니다.
