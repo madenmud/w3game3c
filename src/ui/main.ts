@@ -1,8 +1,13 @@
 import '../style.css';
-import { FACTIONS, FACTION_IDS, ITEMS, MISSIONS, PROFILE_PRESETS, ROUNDS, SEASON_MONTHS, STAT_LABEL, STAT_TOTAL, TASKS, TASK_IDS, TRAIT_TREE } from '../engine/data';
+import { FACTIONS, FACTION_IDS, INTERVIEW_QA, ITEMS, PROFILE_PRESETS, ROUNDS, SEASON_MONTHS, STAT_LABEL, STAT_TOTAL, TRAIT_TREE } from '../engine/data';
 import * as G from '../engine/game';
-import { effectiveStats, fitnessTier, heuBonus } from '../engine/rules';
+import { fitnessTier, heuBonus } from '../engine/rules';
 import { STATS, type Activity, type FactionId, type GameState, type Stat, type TaskId } from '../engine/types';
+import { bar, esc, money, r0, runwayText, traitChoice } from './kit';
+import { answerFor, draftFor, renderHire } from './screens/hire';
+import { renderHome } from './screens/home';
+import { renderTeam } from './screens/team';
+import { resetUi, ui } from './store';
 
 const SAVE_KEY = 'w3game3c-save-v1';
 type Tab = 'home' | 'team' | 'hire' | 'growth' | 'invest' | 'shop' | 'faction' | 'log';
@@ -41,15 +46,6 @@ function set(next: GameState, msg?: string) {
   if (msg) toast = msg;
   save();
   render();
-}
-
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-const money = G.fmtMoney;
-const r0 = (n: number) => Math.round(n);
-
-function bar(value: number, max = 100, tone = '') {
-  const pct = Math.max(0, Math.min(100, (value / max) * 100));
-  return `<span class="bar ${tone}"><span style="width:${pct}%"></span></span>`;
 }
 
 function activityValue(a: Activity): string {
@@ -160,12 +156,12 @@ function renderFound(): string {
 function renderPlay(): string {
   const co = state.company!;
   const tabs: [Tab, string][] = [['home', '현황'], ['team', '팀·업무'], ['hire', `채용${state.candidates.length ? ` ${state.candidates.length}` : ''}`], ['growth', '성장'], ['invest', `투자${state.offers.length ? ' •' : ''}`], ['shop', '상점'], ['faction', '진영'], ['log', '기록']];
-  const content = { home: renderHome, team: renderTeam, hire: renderHire, growth: renderGrowth, invest: renderInvest, shop: renderShop, faction: renderFaction, log: renderLog }[tab]();
+  const content = { home: () => renderHome(state), team: () => renderTeam(state), hire: () => renderHire(state), growth: renderGrowth, invest: renderInvest, shop: renderShop, faction: renderFaction, log: renderLog }[tab]();
   const ev = state.lastEvent;
   return `
   <div class="status">
     <div><span class="k">${esc(co.name)}</span><span class="v">${state.month + 1}개월차 / ${SEASON_MONTHS}</span></div>
-    <div><span class="k">현금 · 런웨이 ${runwayText(co)}</span><span class="v ${co.cash < 0 ? 'neg' : ''}">${money(co.cash)}</span></div>
+    <div><span class="k">현금 · 런웨이 ${runwayText(G.runwayMonths(co))}</span><span class="v ${co.cash < 0 ? 'neg' : ''}">${money(co.cash)}</span></div>
     <div><span class="k">MRR</span><span class="v">${money(co.mrr)}</span></div>
     <div><span class="k">가치</span><span class="v">${money(G.valuation(co, state.player.traits))}</span></div>
   </div>
@@ -177,158 +173,6 @@ function renderPlay(): string {
   </div>`;
 }
 
-function runwayText(co: NonNullable<GameState['company']>): string {
-  const r = G.runwayMonths(co);
-  return Number.isFinite(r) ? `${Math.floor(r)}개월` : '흑자';
-}
-
-function renderHome(): string {
-  const co = state.company!;
-  const p = state.player;
-  const rep = state.lastReport;
-  const runway = G.runwayMonths(co);
-  const card = state.mission ? MISSIONS.find((m) => m.id === state.mission!.cardId) : null;
-  return `
-  ${noRevenueTask(co) ? `<section class="card warn-card"><b>매출을 만드는 사람이 없어요.</b> 매출은 마케팅(사용자)과 영업(B2B), 광고 예산에서 나와요. '팀·업무'에서 나나 직원 한 명을 마케팅이나 영업에 배정해 보세요.</section>` : ''}
-  ${runway < 4 ? `<section class="card warn-card"><b>현금이 ${Math.floor(runway)}개월치 남았어요.</b> 매출은 마케팅(사용자)과 영업(B2B)에서 나와요. 투자 탭의 다음 라운드 조건을 확인하거나, 비용을 줄이세요.</section>` : ''}
-  ${p.pendingTraitChoice ? renderTraitChoice() : ''}
-  <section class="card">
-    <h2>오늘의 학습 카드 <span class="hint-inline">맞히면 이번 달 내 성과 +20%, 팀 성과 +10%, 성장 효율 +20%</span></h2>
-    ${card ? `<p class="q">${esc(card.q)}</p>
-      <div class="choices">${card.choices.map((c, i) => {
-        const m = state.mission!;
-        const cls = m.answered ? (i === card.answer ? 'right' : '') : '';
-        return `<button class="choice ${cls}" data-act="answer" data-arg="${i}" ${m.answered ? 'disabled' : ''}>${esc(c)}</button>`;
-      }).join('')}</div>
-      ${state.mission!.answered ? `<p class="${state.mission!.correct ? 'good' : 'bad'}">${state.mission!.correct ? '정답! 이번 달 보너스가 적용돼요.' : '오답이에요. 2개월 뒤에 다시 나와요.'}</p>` : ''}` : '<p>카드 없음</p>'}
-  </section>
-  <section class="card grid2">
-    <div><h3>제품 완성도</h3>${bar(co.product)} <span class="num">${r0(co.product)}</span></div>
-    <div><h3>사용자</h3><span class="big-num">${co.users.toLocaleString()}</span></div>
-    <div><h3>브랜드</h3>${bar(co.brand)} <span class="num">${r0(co.brand)}</span></div>
-    <div><h3>조직 분위기</h3>${bar(co.culture)} <span class="num">${r0(co.culture)}</span></div>
-    <div><h3>내 피로</h3>${bar(p.fatigue, 100, p.fatigue > 60 ? 'warn' : '')} <span class="num">${r0(p.fatigue)}</span></div>
-    <div><h3>지분</h3><span class="big-num">${(co.ownership * 100).toFixed(1)}%</span> <span class="hint-inline">${ROUNDS[co.roundIndex]!.name}</span></div>
-  </section>
-  ${rep ? `<section class="card">
-    <h2>지난달 정산</h2>
-    <p>매출 ${money(rep.revenue)} · 비용 ${money(rep.costs)} · 현금 ${rep.cashDelta >= 0 ? '+' : ''}${money(rep.cashDelta)} · 사용자 ${rep.usersDelta >= 0 ? '+' : ''}${rep.usersDelta}</p>
-    <table class="tbl"><thead><tr><th>누가</th><th>업무</th><th>성과</th></tr></thead><tbody>
-      ${rep.outputs.map((o) => `<tr><td>${esc(o.who)}</td><td>${TASKS[o.task].label}</td><td>${o.output.toFixed(1)}</td></tr>`).join('')}
-    </tbody></table>
-    ${rep.growth.length ? `<p>성장: ${rep.growth.map((g) => `${STAT_LABEL[g.stat]} +${g.delta.toFixed(2)}`).join(', ')}</p>` : ''}
-    ${rep.resigned.length ? `<p class="bad">퇴사: ${rep.resigned.map(esc).join(', ')}</p>` : ''}
-  </section>` : `<section class="card"><h2>시작 가이드</h2><ol class="guide">
-    <li>'채용'에서 후보를 면접하고 제안을 보내세요.</li>
-    <li>'팀·업무'에서 나와 직원에게 업무를 배정하세요.</li>
-    <li>'성장'에서 이번 달 개인 스케줄 3칸을 정하세요.</li>
-    <li>위의 학습 카드를 풀고, 아래 버튼으로 한 달을 진행하세요.</li>
-  </ol></section>`}
-  ${co.history.length > 1 ? renderChart() : ''}`;
-}
-
-function noRevenueTask(co: NonNullable<GameState['company']>): boolean {
-  const revenue: TaskId[] = ['marketing', 'sales'];
-  return !revenue.includes(co.playerTask) && !co.employees.some((e) => revenue.includes(e.task)) && co.adBudget <= 0;
-}
-
-function renderChart(): string {
-  const h = state.company!.history;
-  const w = 320, ht = 90;
-  const maxV = Math.max(...h.map((x) => x.mrr), 1);
-  const pts = h.map((x, i) => `${(i / Math.max(1, h.length - 1)) * w},${ht - (x.mrr / maxV) * (ht - 10)}`).join(' ');
-  return `<section class="card"><h2>MRR 추이</h2>
-    <svg viewBox="0 0 ${w} ${ht}" class="chart" role="img" aria-label="MRR 추이"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2"/></svg>
-    <p class="hint">최고 ${money(maxV)}</p></section>`;
-}
-
-function taskSelect(who: string, current: TaskId): string {
-  return `<select data-input="task" data-arg="${esc(who)}">${TASK_IDS.map((t) => `<option value="${t}" ${t === current ? 'selected' : ''}>${TASKS[t].label}</option>`).join('')}</select>`;
-}
-
-function renderTeam(): string {
-  const co = state.company!;
-  const p = state.player;
-  const eff = effectiveStats(p);
-  return `
-  <section class="card">
-    <h2>근무 강도</h2>
-    <div class="chips">
-      <button class="chip ${co.intensity === 'normal' ? 'on' : ''}" data-act="intensity" data-arg="normal">보통</button>
-      <button class="chip ${co.intensity === 'crunch' ? 'on' : ''}" data-act="intensity" data-arg="crunch">크런치</button>
-    </div>
-    <p class="hint">크런치는 처음 ${G.CRUNCH_GRACE_MONTHS}개월 동안 성과 +20%예요. 더 이어지면 번아웃으로 성과 보너스가 매달 줄고(최저 -20%) 만족도와 분위기가 더 빨리 떨어져요. 보통으로 돌아오면 번아웃이 매달 2씩 풀려요.</p>
-    ${co.crunchMonths > G.CRUNCH_GRACE_MONTHS ? `<p class="bad">번아웃 ${co.crunchMonths - G.CRUNCH_GRACE_MONTHS}단계 · 다음 달도 크런치면 성과 ×${G.crunchOutputMult(co.crunchMonths + 1).toFixed(1)}</p>` : co.crunchMonths > 0 ? `<p class="hint">크런치 누적 ${co.crunchMonths}개월</p>` : ''}
-  </section>
-  <section class="card">
-    <h2>광고 예산</h2>
-    <p class="hint">매달 이 금액을 써서 사용자를 사요. 예산이 클수록 1명당 단가가 올라요. 투자금을 성장으로 바꾸는 가장 빠른 길이에요. 현금이 모자라면 남은 현금만큼만 써요.</p>
-    <label class="inline">월 광고 예산(달러) <input data-input="ad-budget" type="number" min="0" max="${G.AD_BUDGET_MAX}" step="500" value="${co.adBudget}" /></label>
-    <span class="hint-inline">예상 신규 사용자 약 ${Math.round(G.adUsers(co.adBudget, co.product)).toLocaleString()}명/월</span>
-  </section>
-  <section class="card">
-    <h2>업무가 바꾸는 것</h2>
-    <table class="tbl"><tbody>${TASK_IDS.map((t) => `<tr><td>${TASKS[t].label}</td><td class="hint">${STAT_LABEL[TASKS[t].main]} 중심 · ${TASKS[t].effect}</td></tr>`).join('')}</tbody></table>
-    <p class="hint">매출은 마케팅(사용자 × 완성도), 영업(B2B), 광고 예산에서 나와요. 제품 완성도가 낮으면 모두 약해요. AI 기능은 객단가를 최대 50% 올려요. 한 업무에 여러 명을 몰면 효과가 체감하니 고르게 나누세요.</p>
-  </section>
-  <section class="card">
-    <h2>나 (오너)</h2>
-    <div class="member">
-      <div><b>${esc(p.name)}</b> <span class="hint-inline">급여 없음</span></div>
-      ${taskSelect('player', co.playerTask)}
-    </div>
-    <div class="mini-stats">${STATS.map((s) => `<span>${STAT_LABEL[s]} <b>${r0(eff[s])}</b>${eff[s] !== p.stats[s] ? `<i>(+${r0(eff[s] - p.stats[s])})</i>` : ''}</span>`).join('')}</div>
-  </section>
-  <section class="card">
-    <h2>직원 ${co.employees.length}/${G.MAX_EMPLOYEES}</h2>
-    ${co.employees.length ? co.employees.map((e) => `
-      <div class="member">
-        <div><b>${esc(e.name)}</b> <span class="hint-inline">만족도</span> ${bar(e.satisfaction, 100, e.satisfaction < 35 ? 'warn' : '')} <span class="num">${r0(e.satisfaction)}</span></div>
-        ${taskSelect(e.id, e.task)}
-        <div class="mini-stats">${STATS.map((s) => `<span>${STAT_LABEL[s]} <b>${r0(e.stats[s])}</b></span>`).join('')}</div>
-        <div class="row">
-          <label class="inline">월급 <input class="salary" data-input="salary" data-arg="${e.id}" type="number" step="50" min="${G.salaryFloor(e.stats)}" value="${e.salary}" /></label>
-          <span class="hint-inline">시장가 ${money(G.askingSalary(e.stats))} · 하한 ${money(G.salaryFloor(e.stats))} · 깎으면 만족도가 바로 떨어져요</span>
-          <button class="ghost small danger" data-act="fire" data-arg="${e.id}">내보내기</button>
-        </div>
-      </div>`).join('') : '<p class="hint">아직 직원이 없어요. 채용 탭에서 후보를 만나 보세요.</p>'}
-  </section>`;
-}
-
-function rangeCell(lo: number, hi: number): string {
-  return `<span class="range"><span class="rbar" style="left:${lo}%;width:${Math.max(2, hi - lo)}%"></span></span><span class="num small">${lo}~${hi}</span>`;
-}
-
-function renderHire(): string {
-  const err = G.delegatedInterviewError(state);
-  return `
-  <section class="card">
-    <h2>후보</h2>
-    <p class="hint">진짜 능력치는 숨겨져 있고 추정 범위만 보여요. 실시간 면접은 질문 3개로 원하는 능력치를 ±3까지 좁히고, 위임 면접은 채용 담당의 리더십에 따라 전체를 ±${err}로 좁혀요. 후보는 3개월마다 바뀌어요.</p>
-  </section>
-  ${state.candidates.length ? state.candidates.map((c) => `
-  <section class="card cand">
-    <div class="row between"><b>${esc(c.name)}</b><span class="hint-inline">희망 월급 ${money(c.ask)}</span></div>
-    <div class="cand-stats">${STATS.map((s) => `<div class="cs"><span class="stat-name">${STAT_LABEL[s]}</span>${rangeCell(c.estimate[s].lo, c.estimate[s].hi)}
-      ${c.liveProbesLeft > 0 ? `<button class="tiny" data-act="probe" data-arg="${c.id}|${s}" title="이 능력치를 실시간 면접으로 확인">질문</button>` : ''}</div>`).join('')}</div>
-    <div class="row wrap-row">
-      <span class="hint-inline">실시간 질문 ${c.liveProbesLeft}회 남음</span>
-      <button class="small" data-act="delegate" data-arg="${c.id}" ${c.interviewed === 'delegated' ? 'disabled' : ''}>위임 면접</button>
-    </div>
-    <div class="row wrap-row">
-      <label class="inline">제안 월급 <input id="offer-${c.id}" type="number" step="50" value="${c.ask}" /></label>
-      ${taskSelect(`offer-${c.id}`, G.bestTaskFor(midStats(c.estimate)))}
-      <button class="primary small" data-act="offer" data-arg="${c.id}">제안 보내기</button>
-    </div>
-  </section>`).join('') : '<section class="card"><p>지금은 후보가 없어요. 3개월마다 새 후보가 오고, 네트워킹을 하면 더 와요.</p></section>'}`;
-}
-
-function midStats(est: GameState['candidates'][number]['estimate']) {
-  const o = {} as Record<Stat, number>;
-  for (const s of STATS) o[s] = (est[s].lo + est[s].hi) / 2;
-  return o;
-}
-
 function activitySelect(slot: number, a: Activity): string {
   const opts: [string, string][] = [
     ...STATS.map((s) => [`study:${s}`, `수업: ${STAT_LABEL[s]}`] as [string, string]),
@@ -337,19 +181,12 @@ function activitySelect(slot: number, a: Activity): string {
   return `<select data-input="schedule" data-arg="${slot}">${opts.map(([v, l]) => `<option value="${v}" ${v === activityValue(a) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
 }
 
-function renderTraitChoice(): string {
-  const pend = state.player.pendingTraitChoice!;
-  const node = TRAIT_TREE.find((t) => t.stat === pend.stat && t.threshold === pend.threshold)!;
-  return `<section class="card highlight"><h2>특성 선택: ${STAT_LABEL[pend.stat]} ${pend.threshold}</h2>
-    <div class="factions">${node.options.map((o) => `<button class="faction" data-act="trait" data-arg="${o.id}"><b>${o.name}</b><em>${o.desc}</em></button>`).join('')}</div></section>`;
-}
-
 function renderGrowth(): string {
   const p = state.player;
   const tier = fitnessTier(p.exerciseDaysPerWeek);
   const traitNames = p.traits.map((id) => TRAIT_TREE.flatMap((t) => t.options).find((o) => o.id === id)?.name ?? id);
   return `
-  ${p.pendingTraitChoice ? renderTraitChoice() : ''}
+  ${traitChoice(state)}
   <section class="card">
     <h2>이번 달 개인 스케줄</h2>
     <p class="hint">수업 1칸은 피로 +15, 휴식은 -30이에요. 업무로 매달 피로가 쌓이고 자연 회복이 있어요. 피로가 60을 넘으면 수업 효율이 절반, 80을 넘으면 다음 달 첫 칸이 강제 휴식이에요. 수업 2칸 + 휴식 1칸이 오래 가는 리듬이에요.</p>
@@ -471,6 +308,7 @@ document.addEventListener('click', (ev) => {
       if (state.phase === 'ended' || window.confirm('지금 게임을 지우고 새로 시작할까요?')) {
         foundName = '';
         tab = 'home';
+        resetUi();
         set(G.newGame(randomSeed()), '새 게임을 시작했어요');
       }
       return;
@@ -486,23 +324,42 @@ document.addEventListener('click', (ev) => {
       tab = 'home';
       return set(G.foundCompany(state, name, foundFaction), '창업했어요. 먼저 채용 탭을 열어 보세요.');
     }
-    case 'tab': tab = arg as Tab; return render();
+    case 'tab': tab = arg as Tab; window.scrollTo({ top: 0 }); return render();
+    case 'goto': document.getElementById(arg)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
+    case 'select': ui.selected = ui.selected === arg || !arg ? null : arg; return render();
+    case 'assign': {
+      if (!ui.selected) return;
+      const who = ui.selected;
+      ui.selected = null;
+      return set(G.assignTask(state, who, arg as TaskId));
+    }
+    case 'open-cand': ui.candidateId = arg || null; window.scrollTo({ top: 0 }); return render();
     case 'answer': return set(G.answerMission(state, Number(arg)));
     case 'advance': {
       const prev = state.month;
       const next = G.advanceMonth(state);
       tab = next.phase === 'ended' ? tab : 'home';
+      ui.selected = null;
+      ui.candidateId = null;
       window.scrollTo({ top: 0 });
       return set(next, next.phase === 'ended' ? undefined : `${prev + 1}개월차 정산 완료`);
     }
     case 'intensity': return set(G.setIntensity(state, arg as 'normal' | 'crunch'));
-    case 'fire': if (window.confirm('정말 내보낼까요? 퇴직금으로 한 달치 월급이 나가요.')) set(G.fire(state, arg)); return;
-    case 'probe': { const [id, stat] = arg.split('|'); return set(G.liveProbe(state, id!, stat as Stat)); }
+    case 'fire': if (window.confirm('정말 내보낼까요? 퇴직금으로 한 달치 월급이 나가요.')) { ui.selected = null; set(G.fire(state, arg)); } return;
+    case 'probe': {
+      const [id, st] = arg.split('|') as [string, Stat];
+      const next = G.liveProbe(state, id, st);
+      const est = next.candidates.find((c) => c.id === id)?.estimate[st];
+      if (next !== state && est) (ui.transcript[id] ??= []).push({ stat: st, q: INTERVIEW_QA[st].q, a: answerFor(st, est.lo, est.hi), lo: est.lo, hi: est.hi });
+      return set(next);
+    }
     case 'delegate': return set(G.delegateInterview(state, arg), '위임 면접 결과가 나왔어요');
     case 'offer': {
-      const salary = Number((document.getElementById(`offer-${arg}`) as HTMLInputElement).value);
-      const sel = document.querySelector<HTMLSelectElement>(`select[data-arg="offer-${arg}"]`);
-      const r = G.offer(state, arg, salary, (sel?.value ?? 'dev') as TaskId);
+      const c = state.candidates.find((x) => x.id === arg);
+      if (!c) return;
+      const d = draftFor(c);
+      const r = G.offer(state, arg, d.salary, d.task);
+      if (r.state !== state) { ui.candidateId = null; delete ui.offerDraft[arg]; delete ui.transcript[arg]; }
       return set(r.state, r.message);
     }
     case 'trait': return set(G.chooseTrait(state, arg));
@@ -518,7 +375,14 @@ document.addEventListener('change', (ev) => {
   const el = ev.target as HTMLInputElement | HTMLSelectElement;
   const kind = el.dataset.input;
   const arg = el.dataset.arg ?? '';
-  if (kind === 'task' && !arg.startsWith('offer-')) return set(G.assignTask(state, arg, el.value as TaskId));
+  if (kind === 'offer-salary' || kind === 'offer-task') {
+    const c = state.candidates.find((x) => x.id === arg);
+    if (!c) return;
+    const d = draftFor(c);
+    if (kind === 'offer-salary') d.salary = Math.max(0, Math.round((Number(el.value) || 0) / 50) * 50);
+    else d.task = el.value as TaskId;
+    return render();
+  }
   if (kind === 'salary') {
     const before = state.company?.employees.find((e) => e.id === arg)?.salary ?? 0;
     const next = G.setSalary(state, arg, Number(el.value));
