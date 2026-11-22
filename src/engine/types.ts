@@ -67,6 +67,8 @@ export interface Company {
   aiScore: number;
   irScore: number;
   intensity: Intensity;
+  crunchMonths: number; // 크런치 누적(번아웃). 크런치 달 +1, 보통 달 -2
+  adBudget: number; // 월 광고 예산(달러). 투자금을 성장으로 바꾸는 통로
   playerTask: TaskId;
   employees: Employee[];
   roundIndex: number; // 0: 없음, 1: 엔젤, 2: 시드, 3: 시리즈A, 4: 시리즈B

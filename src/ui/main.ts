@@ -23,7 +23,10 @@ function load(): GameState | null {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as GameState;
-    return s.version === 1 ? s : null;
+    if (s.version !== 1) return null;
+    // 이전 저장본에는 크런치 누적·광고 예산이 없다
+    if (s.company) { s.company.crunchMonths ??= 0; s.company.adBudget ??= 0; }
+    return s;
   } catch {
     return null;
   }
@@ -186,10 +189,11 @@ function renderHome(): string {
   const runway = G.runwayMonths(co);
   const card = state.mission ? MISSIONS.find((m) => m.id === state.mission!.cardId) : null;
   return `
+  ${noRevenueTask(co) ? `<section class="card warn-card"><b>매출을 만드는 사람이 없어요.</b> 매출은 마케팅(사용자)과 영업(B2B), 광고 예산에서 나와요. '팀·업무'에서 나나 직원 한 명을 마케팅이나 영업에 배정해 보세요.</section>` : ''}
   ${runway < 4 ? `<section class="card warn-card"><b>현금이 ${Math.floor(runway)}개월치 남았어요.</b> 매출은 마케팅(사용자)과 영업(B2B)에서 나와요. 투자 탭의 다음 라운드 조건을 확인하거나, 비용을 줄이세요.</section>` : ''}
   ${p.pendingTraitChoice ? renderTraitChoice() : ''}
   <section class="card">
-    <h2>오늘의 학습 카드 <span class="hint-inline">맞히면 이번 달 내 성과 +20%, 성장 효율 +20%</span></h2>
+    <h2>오늘의 학습 카드 <span class="hint-inline">맞히면 이번 달 내 성과 +20%, 팀 성과 +10%, 성장 효율 +20%</span></h2>
     ${card ? `<p class="q">${esc(card.q)}</p>
       <div class="choices">${card.choices.map((c, i) => {
         const m = state.mission!;
@@ -223,6 +227,11 @@ function renderHome(): string {
   ${co.history.length > 1 ? renderChart() : ''}`;
 }
 
+function noRevenueTask(co: NonNullable<GameState['company']>): boolean {
+  const revenue: TaskId[] = ['marketing', 'sales'];
+  return !revenue.includes(co.playerTask) && !co.employees.some((e) => revenue.includes(e.task)) && co.adBudget <= 0;
+}
+
 function renderChart(): string {
   const h = state.company!.history;
   const w = 320, ht = 90;
@@ -246,13 +255,21 @@ function renderTeam(): string {
     <h2>근무 강도</h2>
     <div class="chips">
       <button class="chip ${co.intensity === 'normal' ? 'on' : ''}" data-act="intensity" data-arg="normal">보통</button>
-      <button class="chip ${co.intensity === 'crunch' ? 'on' : ''}" data-act="intensity" data-arg="crunch">크런치(성과 +20%, 만족도·피로 악화)</button>
+      <button class="chip ${co.intensity === 'crunch' ? 'on' : ''}" data-act="intensity" data-arg="crunch">크런치</button>
     </div>
+    <p class="hint">크런치는 처음 ${G.CRUNCH_GRACE_MONTHS}개월 동안 성과 +20%예요. 더 이어지면 번아웃으로 성과 보너스가 매달 줄고(최저 -20%) 만족도와 분위기가 더 빨리 떨어져요. 보통으로 돌아오면 번아웃이 매달 2씩 풀려요.</p>
+    ${co.crunchMonths > G.CRUNCH_GRACE_MONTHS ? `<p class="bad">번아웃 ${co.crunchMonths - G.CRUNCH_GRACE_MONTHS}단계 · 다음 달도 크런치면 성과 ×${G.crunchOutputMult(co.crunchMonths + 1).toFixed(1)}</p>` : co.crunchMonths > 0 ? `<p class="hint">크런치 누적 ${co.crunchMonths}개월</p>` : ''}
+  </section>
+  <section class="card">
+    <h2>광고 예산</h2>
+    <p class="hint">매달 이 금액을 써서 사용자를 사요. 예산이 클수록 1명당 단가가 올라요. 투자금을 성장으로 바꾸는 가장 빠른 길이에요. 현금이 모자라면 남은 현금만큼만 써요.</p>
+    <label class="inline">월 광고 예산(달러) <input data-input="ad-budget" type="number" min="0" max="${G.AD_BUDGET_MAX}" step="500" value="${co.adBudget}" /></label>
+    <span class="hint-inline">예상 신규 사용자 약 ${Math.round(G.adUsers(co.adBudget, co.product)).toLocaleString()}명/월</span>
   </section>
   <section class="card">
     <h2>업무가 바꾸는 것</h2>
     <table class="tbl"><tbody>${TASK_IDS.map((t) => `<tr><td>${TASKS[t].label}</td><td class="hint">${STAT_LABEL[TASKS[t].main]} 중심 · ${TASKS[t].effect}</td></tr>`).join('')}</tbody></table>
-    <p class="hint">매출은 마케팅(사용자 × 완성도)과 영업(B2B)에서 나와요. 제품 완성도가 낮으면 둘 다 약해요.</p>
+    <p class="hint">매출은 마케팅(사용자 × 완성도), 영업(B2B), 광고 예산에서 나와요. 제품 완성도가 낮으면 모두 약해요. AI 기능은 객단가를 최대 50% 올려요. 한 업무에 여러 명을 몰면 효과가 체감하니 고르게 나누세요.</p>
   </section>
   <section class="card">
     <h2>나 (오너)</h2>
@@ -270,8 +287,8 @@ function renderTeam(): string {
         ${taskSelect(e.id, e.task)}
         <div class="mini-stats">${STATS.map((s) => `<span>${STAT_LABEL[s]} <b>${r0(e.stats[s])}</b></span>`).join('')}</div>
         <div class="row">
-          <label class="inline">월급 <input class="salary" data-input="salary" data-arg="${e.id}" type="number" step="50" value="${e.salary}" /></label>
-          <span class="hint-inline">시장가 ${money(G.askingSalary(e.stats))}</span>
+          <label class="inline">월급 <input class="salary" data-input="salary" data-arg="${e.id}" type="number" step="50" min="${G.salaryFloor(e.stats)}" value="${e.salary}" /></label>
+          <span class="hint-inline">시장가 ${money(G.askingSalary(e.stats))} · 하한 ${money(G.salaryFloor(e.stats))} · 깎으면 만족도가 바로 떨어져요</span>
           <button class="ghost small danger" data-act="fire" data-arg="${e.id}">내보내기</button>
         </div>
       </div>`).join('') : '<p class="hint">아직 직원이 없어요. 채용 탭에서 후보를 만나 보세요.</p>'}
@@ -353,7 +370,8 @@ function renderInvest(): string {
   return `
   <section class="card">
     <h2>현재 라운드: ${ROUNDS[co.roundIndex]!.name}</h2>
-    <p>지분 ${(co.ownership * 100).toFixed(1)}% · 회사 가치 ${money(G.valuation(co, state.player.traits))} · IR 점수 ${r0(co.irScore)}</p>
+    <p>지분 ${(co.ownership * 100).toFixed(1)}% · 회사 가치 ${money(G.valuation(co, state.player.traits))} · IR 점수 ${r0(co.irScore)} · 성장 웃돈 +${r0(G.growthPremium(co) * 100)}%</p>
+    <p class="hint">회사 가치에는 보유 현금이 들어가요. VC는 최근 3개월 MRR 성장률만큼(최대 +60%) 웃돈을 얹어 줘요. 받은 투자금은 채용과 광고 예산으로 성장에 써야 지분을 내준 값을 해요.</p>
     ${next ? `<p class="hint">다음 라운드 ${next.name} 조건: MRR ${money(next.minMrr)} 이상, 제품 완성도 ${next.minProduct} 이상 (지금 ${money(co.mrr)}, ${r0(co.product)}). 재무 업무는 IR 점수를 올려 밸류에이션을 높여요.</p>` : '<p>모든 라운드를 마쳤어요.</p>'}
   </section>
   ${state.offers.map((o) => `
@@ -501,7 +519,13 @@ document.addEventListener('change', (ev) => {
   const kind = el.dataset.input;
   const arg = el.dataset.arg ?? '';
   if (kind === 'task' && !arg.startsWith('offer-')) return set(G.assignTask(state, arg, el.value as TaskId));
-  if (kind === 'salary') return set(G.setSalary(state, arg, Number(el.value)));
+  if (kind === 'salary') {
+    const before = state.company?.employees.find((e) => e.id === arg)?.salary ?? 0;
+    const next = G.setSalary(state, arg, Number(el.value));
+    const after = next.company?.employees.find((e) => e.id === arg)?.salary ?? 0;
+    return set(next, after > Number(el.value) ? `월급 하한 ${money(after)}까지만 내릴 수 있어요` : after < before ? '월급을 깎아 만족도가 떨어졌어요' : undefined);
+  }
+  if (kind === 'ad-budget') return set(G.setAdBudget(state, Number(el.value)));
   if (kind === 'schedule') return set(G.setSchedule(state, Number(arg) as 0 | 1 | 2, parseActivity(el.value)));
   if (kind === 'spend-limit') return set(G.setSpendLimit(state, Number(el.value)));
   if (state.phase === 'create' && (el.id === 'heu' || el.classList.contains('ex') || el.id === 'avatar-name')) set(readAvatarInputs());
