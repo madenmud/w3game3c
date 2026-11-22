@@ -1,8 +1,13 @@
 // 밸런스 검증용 자동 플레이어. 테스트와 수치 점검에서만 쓴다.
 import { MISSIONS, TASKS } from './data';
 import * as G from './game';
+import { resolveDilemma } from './dilemmas';
+import { rngFor } from './rng';
 import { fit } from './rules';
 import type { GameState, TaskId } from './types';
+
+/** 결단 카드를 고르는 방식: 기본 선택지(방치), 늘 첫 번째, 무작위, 참모 다수결, 직접 함수 */
+export type DilemmaPolicy = 'default' | 'first' | 'random' | 'advice' | ((s: GameState) => number);
 
 export type BotStyle = 'good' | 'idle' | 'reckless';
 
@@ -26,6 +31,21 @@ export interface Strategy {
   preset?: string;
   heu?: number;
   maxEmployees?: number;
+  /** 결단 카드 방식. 기본은 'default'(고르지 않고 정산) */
+  dilemma?: DilemmaPolicy;
+}
+
+export function chooseDilemma(s: GameState, policy: DilemmaPolicy = 'default'): number {
+  const d = s.dilemma!;
+  if (typeof policy === 'function') return policy(s);
+  if (policy === 'first') return 0;
+  if (policy === 'random') return Math.floor(rngFor(s.seed, 'bot-dilemma', s.month)() * d.choices.length);
+  if (policy === 'advice') {
+    const votes = d.choices.map((_, i) => d.advice.filter((a) => a.pick === i).length);
+    const max = Math.max(...votes);
+    return max > 0 ? votes.indexOf(max) : d.defaultChoice;
+  }
+  return d.defaultChoice;
 }
 
 const BALANCED: TaskId[] = ['dev', 'marketing', 'sales', 'plan', 'finance', 'ai'];
@@ -42,19 +62,37 @@ export function playStrategy(seed: string, o: Strategy = {}): GameState {
   s = G.finishAvatar(s);
   s = G.foundCompany(s, '테스트 컴퍼니', 'north');
   if (o.playerTask) s = G.assignTask(s, 'player', o.playerTask);
+  return playOn(s, o);
+}
+
+/** 지금 상태에서 시즌 끝까지 전략대로 이어서 둔다(결단 카드 분기 비교용). */
+export function playOn(start: GameState, o: Strategy = {}, until?: (s: GameState) => boolean): GameState {
+  let s = start;
   const tasks = o.tasks ?? BALANCED;
   const maxEmp = o.maxEmployees ?? 6;
   let guard = 0;
   while (s.phase === 'play' && guard++ < 100) {
+    if (until?.(s)) return s;
+    if (s.dilemma && s.dilemma.chosen === null && (o.dilemma ?? 'default') !== 'default') s = resolveDilemma(s, chooseDilemma(s, o.dilemma));
     const co = s.company!;
     // 채용: 고정비 8개월치 이상 현금이 남을 때 한 명씩
     const monthly = co.employees.reduce((a, e) => a + e.salary, 0) + 1000 + co.adBudget;
     if (co.employees.length < maxEmp && s.candidates.length && co.cash > (monthly + 3000) * 8) {
-      const need = tasks[co.employees.length % tasks.length]!;
+      // 아직 아무도 맡지 않은 업무부터 채운다(결단 카드로 들어온 사람이 있어도 균형이 깨지지 않게)
+      const need = tasks.find((t) => !co.employees.some((e) => e.task === t)) ?? tasks[co.employees.length % tasks.length]!;
       const c = pickFor(s, need);
       if (c) {
         s = G.delegateInterview(s, c.id);
         s = G.offer(s, c.id, Math.ceil(G.acceptanceThreshold(s, c) / 50) * 50, need).state;
+      }
+    }
+    if (!o.tasks) {
+      // 결단 카드로 들어온 사람 때문에 업무가 겹치면 빈 업무로 옮긴다(사람이라면 그렇게 한다)
+      for (const e of s.company!.employees) {
+        const cur = s.company!.employees;
+        const dup = cur.filter((x) => x.task === e.task).length > 1;
+        const free = tasks.find((t) => !cur.some((x) => x.task === t));
+        if (dup && free) s = G.assignTask(s, e.id, free);
       }
     }
     for (const e of s.company!.employees) {
@@ -83,7 +121,7 @@ export function playStrategy(seed: string, o: Strategy = {}): GameState {
 
 /** 기존 테스트용 세 가지 스타일 */
 export function playSeason(seed: string, style: BotStyle, opts: { missionCorrect?: boolean } = {}): GameState {
-  if (style === 'good') return playStrategy(seed, { useAds: true, missionCorrect: opts.missionCorrect, playerTask: 'dev' });
+  if (style === 'good') return playStrategy(seed, { useAds: true, missionCorrect: opts.missionCorrect, playerTask: 'dev', dilemma: 'advice' });
   let s = G.newGame(seed);
   s = G.applyProfilePreset(s, 'engineer');
   s = G.finishAvatar(s);

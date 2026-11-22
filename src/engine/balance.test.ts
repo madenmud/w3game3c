@@ -5,7 +5,7 @@ import type { TaskId } from './types';
 
 const SEEDS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'];
 const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-const GOOD: Strategy = { useAds: true, playerTask: 'dev' };
+const GOOD: Strategy = { useAds: true, playerTask: 'dev', dilemma: 'advice' };
 const score = (o: Strategy) => avg(SEEDS.map((s) => finalScore(playStrategy(s, o))));
 
 describe('밸런스(자동 플레이어로 한 시즌)', () => {
@@ -34,7 +34,10 @@ describe('밸런스(자동 플레이어로 한 시즌)', () => {
   });
 
   it('미션을 맞히면 점수가 오른다', () => {
-    expect(goodScore).toBeGreaterThan(score({ ...GOOD, missionCorrect: false }));
+    // 결단 카드로 판마다 흐름이 갈라지므로 시드를 넉넉히 쓴다
+    const many = Array.from({ length: 30 }, (_, i) => `m${i}`);
+    const sc = (o: Strategy) => avg(many.map((s) => finalScore(playStrategy(s, o))));
+    expect(sc(GOOD)).toBeGreaterThan(sc({ ...GOOD, missionCorrect: false }));
   });
 
   it('같은 시드는 같은 결과를 낸다(결정적 정산)', () => {

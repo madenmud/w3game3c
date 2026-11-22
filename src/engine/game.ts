@@ -3,6 +3,7 @@ import {
   COMPANY_NAME_PARTS, EVENTS, FACTIONS, INVESTORS, ITEMS, MISSIONS, NAME_PARTS, PROFILE_PRESETS,
   ROUNDS, SEASON_MONTHS, STAT_LABEL, STAT_MAX, STAT_MIN, STAT_TOTAL, TASKS, TRAIT_TREE,
 } from './data';
+import { drawDilemma, resolveDilemma } from './dilemmas';
 import { clamp, intBetween, pick, rngFor, uniform, type Rng } from './rng';
 import {
   canEquip, effectiveStats, fatigueEfficiency, fit, fitnessTier, growthDelta, satisfactionMod, wearPoints,
@@ -107,6 +108,8 @@ export function newGame(seed: string): GameState {
     lastEvent: null,
     log: [],
     lastReport: null,
+    dilemma: null,
+    dilemmaSeen: [],
   };
 }
 
@@ -190,6 +193,7 @@ export function foundCompany(state: GameState, name: string, faction: FactionId)
     ownership: 1,
     negativeCashMonths: 0,
     history: [],
+    buffs: [],
   };
   s.phase = 'play';
   s.candidates = makeCandidates(s, 5);
@@ -348,7 +352,18 @@ export function diminish(sum: number): number {
 }
 
 export function arpu(co: Company): number {
-  return ARPU * (1 + Math.min(AI_ARPU_CAP, co.aiScore / 400));
+  const buffMult = (co.buffs ?? []).reduce((a, b) => a * (b.arpuMult ?? 1), 1);
+  return ARPU * (1 + Math.min(AI_ARPU_CAP, co.aiScore / 400)) * buffMult;
+}
+
+/** 결단 카드 효과 중 이 사람·업무에 걸리는 성과 배수 */
+export function buffOutputMult(co: Company, workerId: string, task: TaskId): number {
+  let m = 1;
+  for (const b of co.buffs ?? []) {
+    if (b.mult === undefined) continue;
+    if (b.workerId !== undefined ? b.workerId === workerId : b.task === 'all' || b.task === task) m *= b.mult;
+  }
+  return m;
 }
 
 export function fire(state: GameState, employeeId: string): GameState {
@@ -591,6 +606,7 @@ export function workerOutput(state: GameState, w: Worker, task: TaskId, crunch: 
     if (task === 'ai' && p.traits.includes('researcher')) out *= 1.1;
   }
   if (task === 'dev' && p.traits.includes('architect')) out *= 1.05;
+  out *= buffOutputMult(co, w.id, task);
   return Math.round(out * 10) / 10;
 }
 
@@ -630,7 +646,7 @@ function settleCompany(s: GameState, crunch: number, noise: () => number): Settl
   co.product = clamp(co.product + sum.dev * 0.35 * (1 - co.product / 110) + sum.ai * 0.15 * (1 - co.product / 110), 0, 100);
   co.aiScore += sum.ai;
   co.retentionBonus = Math.min(0.05, co.retentionBonus + sum.plan * 0.0008 * (p.traits.includes('designer') ? 1.2 : 1));
-  const churn = 0.08 - co.retentionBonus;
+  const churn = clamp(0.08 - co.retentionBonus + (co.buffs ?? []).reduce((a, b) => a + (b.churnAdd ?? 0), 0), 0.01, 0.3);
   const adSpend = Math.min(co.adBudget ?? 0, Math.max(0, co.cash));
   const newUsers = sum.marketing * 25 * (0.4 + co.product / 100) * (1 + co.brand / 100) + co.product * 6 + adUsers(adSpend, co.product);
   const beforeUsers = co.users;
@@ -704,6 +720,8 @@ export function runwayWithExtraCost(co: Company, extra: number): number {
 
 export function advanceMonth(state: GameState): GameState {
   if (state.phase !== 'play' || !state.company) return state;
+  // 고르지 않은 결단 카드는 기본 선택지로 처리한다(매일 자동 정산과 같은 규칙)
+  if (state.dilemma && state.dilemma.chosen === null) state = resolveDilemma(state, state.dilemma.defaultChoice, true);
   const s = clone(state);
   const co = s.company!;
   const p = s.player;
@@ -726,6 +744,7 @@ export function advanceMonth(state: GameState): GameState {
   report.costs = settled.costs;
   report.cashDelta = settled.cashDelta;
   co.negativeCashMonths = co.cash < 0 ? co.negativeCashMonths + 1 : 0;
+  co.buffs = (co.buffs ?? []).map((b) => ({ ...b, monthsLeft: b.monthsLeft - 1 })).filter((b) => b.monthsLeft > 0);
 
   // 4) 직원 만족도와 퇴사
   const keep: Employee[] = [];
@@ -797,6 +816,7 @@ export function advanceMonth(state: GameState): GameState {
   s.mission = drawMission(s);
   s.lastEvent = eventFor(s.seed, s.month);
   s.lastReport = report;
+  s.dilemma = s.month < SEASON_MONTHS ? drawDilemma(s) : null;
   pushLog(s, `${s.month}개월차 정산: 매출 ${fmtMoney(report.revenue)}, 비용 ${fmtMoney(report.costs)}, 현금 ${fmtMoney(co.cash)}.`, report.cashDelta >= 0 ? 'good' : 'info');
 
   if (co.negativeCashMonths >= 2) {
@@ -808,6 +828,7 @@ export function advanceMonth(state: GameState): GameState {
     s.endReason = 'season';
     pushLog(s, '시즌이 끝났다.', 'info');
   }
+  if (s.phase !== 'play') s.dilemma = null;
   return s;
 }
 

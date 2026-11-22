@@ -1,6 +1,7 @@
 import '../style.css';
 import { FACTIONS, FACTION_IDS, INTERVIEW_QA, ITEMS, PROFILE_PRESETS, ROUNDS, SEASON_MONTHS, STAT_LABEL, STAT_TOTAL, TRAIT_TREE } from '../engine/data';
 import * as G from '../engine/game';
+import { resolveDilemma } from '../engine/dilemmas';
 import { fitnessTier, heuBonus } from '../engine/rules';
 import { STATS, type Activity, type FactionId, type GameState, type Stat, type TaskId } from '../engine/types';
 import { bar, esc, money, r0, runwayText, traitChoice } from './kit';
@@ -335,6 +336,10 @@ document.addEventListener('click', (ev) => {
     }
     case 'open-cand': ui.candidateId = arg || null; window.scrollTo({ top: 0 }); return render();
     case 'answer': return set(G.answerMission(state, Number(arg)));
+    case 'dilemma': {
+      const next = resolveDilemma(state, Number(arg));
+      return set(next, next.dilemma?.result ?? undefined);
+    }
     case 'advance': {
       const prev = state.month;
       const next = G.advanceMonth(state);
