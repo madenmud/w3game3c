@@ -1,5 +1,6 @@
 // 현황 대시보드: 오늘 할 일 → 핵심 지표와 추세 → 다음 달 예상 → 학습 카드 → 지난달 정산
 import { MISSIONS, ROUNDS, STAT_LABEL, TASKS } from '../../engine/data';
+import { DILEMMA_COOLDOWN } from '../../engine/dilemmas';
 import * as G from '../../engine/game';
 import type { GameState } from '../../engine/types';
 import { bar, delta, esc, money, noRevenueTask, r0, runwayText, sparkline, traitChoice } from '../kit';
@@ -9,6 +10,7 @@ type Todo = { text: string; act: string; arg: string; cta: string };
 function todos(state: GameState): Todo[] {
   const co = state.company!;
   const out: Todo[] = [];
+  if (state.dilemma && state.dilemma.chosen === null) out.push({ text: `이번 달 결단: ${state.dilemma.title}`, act: 'goto', arg: 'dilemma', cta: '결정' });
   if (state.mission && !state.mission.answered) out.push({ text: '오늘의 학습 카드를 풀면 이번 달 성과가 올라요', act: 'goto', arg: 'mission', cta: '풀기' });
   if (state.player.pendingTraitChoice) out.push({ text: '새 특성을 고를 수 있어요', act: 'goto', arg: 'trait', cta: '고르기' });
   if (state.offers.length) out.push({ text: `투자 제안 ${state.offers.length}건이 기다리고 있어요`, act: 'tab', arg: 'invest', cta: '검토' });
@@ -56,9 +58,40 @@ function renderForecast(state: GameState): string {
       <div><span class="k">사용자</span><b>${f.usersDelta >= 0 ? '+' : ''}${f.usersDelta.toLocaleString()}</b></div>
       <div><span class="k">완성도</span><b>${r0(f.before.product)} → ${f.after.product.toFixed(1)}</b></div>
     </div>
+    ${renderBuffs(state)}
     <p class="hint">개인 성과는 매달 ±15% 흔들리고, 정산 뒤 현금은 약 ${money(cashAfter)}이 돼요.${cashAfter < 0 && co.cash >= 0 ? ' <b class="bad">이대로면 현금이 바닥나요.</b>' : ''} 배정을 바꾸면 이 숫자가 바로 바뀌어요.</p>
     <div class="row"><button class="small" data-act="tab" data-arg="team">업무 배정 바꾸기</button></div>
   </section>`;
+}
+
+function renderDilemma(state: GameState): string {
+  const d = state.dilemma;
+  if (!d) return '';
+  const votes = d.choices.map((_, i) => d.advice.filter((a) => a.pick === i).length);
+  const decided = d.chosen !== null;
+  const advice = d.advice.length
+    ? `<ul class="advice">${d.advice.map((a) => `<li><b>${esc(a.who)}</b>${a.pick >= 0 ? ` <span class="pick">→ ${esc(d.choices[a.pick]!.label)}</span>` : ''}<span class="say">“${esc(a.text)}”</span></li>`).join('')}</ul>`
+    : `<p class="hint">조언해 줄 직원이 없어요. 사람을 뽑으면 성향이 다른 참모들이 의견을 내요.</p>`;
+  return `<section class="card dilemma ${decided ? 'done' : ''}" id="dilemma">
+    <h2>이번 달 결단 <span class="hint-inline">${esc(d.title)}</span></h2>
+    <p class="story">${esc(d.text)}</p>
+    <h3>참모 조언</h3>
+    ${advice}
+    <div class="dchoices">${d.choices.map((c, i) => `
+      <button class="dchoice ${d.chosen === i ? 'on' : ''}" data-act="dilemma" data-arg="${i}" ${decided ? 'disabled' : ''}>
+        <span class="l">${esc(c.label)}${votes[i] ? ` <span class="tag">추천 ${votes[i]}</span>` : ''}</span>
+        <span class="d">${esc(c.desc)}</span>
+      </button>`).join('')}</div>
+    ${decided
+      ? `<p class="${d.tone === 'bad' ? 'bad' : d.tone === 'good' ? 'good' : ''}"><b>결과</b> ${esc(d.result ?? '')}</p>`
+      : `<p class="hint">고르지 않고 정산하면 '${esc(d.choices[d.defaultChoice]!.label)}'(으)로 처리돼요. 같은 일은 ${DILEMMA_COOLDOWN}개월 안에 다시 일어나지 않아요.</p>`}
+  </section>`;
+}
+
+function renderBuffs(state: GameState): string {
+  const b = state.company!.buffs ?? [];
+  if (!b.length) return '';
+  return `<p class="hint">진행 중인 효과: ${b.map((x) => `${esc(x.label)} (${x.monthsLeft}개월 남음)`).join(', ')}</p>`;
 }
 
 function renderMission(state: GameState): string {
@@ -109,6 +142,7 @@ export function renderHome(state: GameState): string {
     ${list.length ? `<ul>${list.map((t) => `<li><span>${esc(t.text)}</span><button class="small" data-act="${t.act}" data-arg="${t.arg}">${t.cta}</button></li>`).join('')}</ul>`
       : `<p class="good">할 일을 마쳤어요. 아래 버튼으로 한 달을 진행하세요.</p>`}
   </section>
+  ${renderDilemma(state)}
   ${renderKpis(state)}
   ${renderForecast(state)}
   <div id="trait">${traitChoice(state)}</div>

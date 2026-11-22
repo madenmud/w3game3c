@@ -227,3 +227,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .lane-sum { margin-left: 0; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .toast { animation-duration: .01s; animation-delay: 2.6s; } }
+
+/* 이번 달 결단 */
+.card.dilemma { border-color: var(--accent); border-width: 2px; }
+.card.dilemma.done { border-width: 1px; border-color: var(--line); }
+.dilemma .story { font-size: 15px; line-height: 1.55; }
+.advice { list-style: none; padding: 0; margin: 4px 0 12px; display: grid; gap: 8px; }
+.advice li { background: var(--bg); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.advice .pick { color: var(--accent); font-weight: 600; }
+.advice .say { display: block; color: var(--muted); margin-top: 2px; }
+.dchoices { display: grid; gap: 8px; }
+.dchoice { display: grid; gap: 4px; text-align: left; padding: 10px 12px; white-space: normal; }
+.dchoice .l { font-weight: 600; }
+.dchoice .d { font-size: 13px; color: var(--muted); }
+.dchoice.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.dchoice:disabled:not(.on) { opacity: 0.55; }
+.dchoice.on:disabled { opacity: 1; color: var(--text); }

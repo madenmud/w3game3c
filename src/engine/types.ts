@@ -75,6 +75,47 @@ export interface Company {
   ownership: number; // 플레이어 지분 0~1
   negativeCashMonths: number;
   history: { month: number; mrr: number; cash: number; valuation: number; users: number }[];
+  /** 결단 카드가 남긴 몇 달짜리 효과(없던 옛 저장은 undefined) */
+  buffs?: Buff[];
+}
+
+/** 몇 달 동안 이어지는 효과. task가 있으면 그 업무 성과에, workerId가 있으면 그 사람 성과에 mult를 곱한다. */
+export interface Buff {
+  label: string;
+  monthsLeft: number;
+  task?: TaskId | 'all';
+  workerId?: string;
+  mult?: number;
+  churnAdd?: number;
+  arpuMult?: number;
+}
+
+/** 참모 한 명의 조언 */
+export interface Advice {
+  who: string;
+  /** 추천하는 선택지 번호(-1이면 의견 없음) */
+  pick: number;
+  text: string;
+}
+
+export interface DilemmaChoice {
+  label: string;
+  desc: string;
+}
+
+/** 이번 달 결단 카드. 화면에 쓸 글은 뽑을 때 만들어 저장한다. */
+export interface DilemmaState {
+  id: string;
+  title: string;
+  text: string;
+  choices: DilemmaChoice[];
+  /** 고르지 않고 정산하면 적용되는 선택지 */
+  defaultChoice: number;
+  params: Record<string, string | number>;
+  advice: Advice[];
+  chosen: number | null;
+  result: string | null;
+  tone: 'good' | 'bad' | 'info' | null;
 }
 
 export interface Rival {
@@ -126,6 +167,10 @@ export interface GameState {
   lastEvent: { id: string; title: string; text: string } | null;
   log: LogEntry[];
   lastReport: MonthReport | null;
+  /** 이번 달 결단 카드(없던 옛 저장은 undefined) */
+  dilemma?: DilemmaState | null;
+  /** 최근에 나온 결단 카드(반복 방지) */
+  dilemmaSeen?: { id: string; month: number }[];
 }
 
 export interface MonthReport {
